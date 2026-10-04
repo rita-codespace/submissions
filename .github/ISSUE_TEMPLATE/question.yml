@@ -1,0 +1,17 @@
+name: 문의 (Question / Support)
+description: Repository 생성·초대·권한 문제 등을 관리자에게 문의합니다. (Repository는 생성되지 않습니다)
+title: "[문의] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Repository 등록 신청은 이 양식이 아니라 **Project Repository Registration** 양식을 사용하세요.
+        등록 Issue에 오류 댓글이 달렸다면 그 Issue에서 관리자가 처리하므로 따로 문의하지 않아도 됩니다.
+  - type: textarea
+    id: question
+    attributes:
+      label: 문의 내용
+      description: 어떤 문제가 있었는지, 관련 Issue나 Repository 링크가 있다면 함께 적어 주세요. 비밀번호·토큰 등 민감정보는 적지 마세요.
+    validations:
+      required: true
