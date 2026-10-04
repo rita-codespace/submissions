@@ -36,8 +36,9 @@ jobs:
           owner: ${{ github.repository_owner }}
           permission-administration: write
 
-      # Identity comes only from github.event.issue.user. The issue title and
-      # body are never passed to the shell.
+      # Identity comes only from github.event.issue.user. The issue body is
+      # passed as an environment variable (never interpolated into the script)
+      # and only the validated repository name is taken from it.
       - name: Create repository and invite student
         id: register
         env:
@@ -46,6 +47,8 @@ jobs:
           STUDENT_LOGIN: ${{ github.event.issue.user.login }}
           STUDENT_ID: ${{ github.event.issue.user.id }}
           STUDENT_TYPE: ${{ github.event.issue.user.type }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          MAX_REPOS: "5"
         run: bash .github/scripts/register-student.sh
 
       - name: Report result on the issue

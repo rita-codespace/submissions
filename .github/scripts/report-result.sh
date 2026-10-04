@@ -51,6 +51,22 @@ EOF
     gh issue close "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --reason completed
     ;;
   *)
+    case ${ERROR_CODE:-} in
+      invalid_repo_name|repo_limit_reached)
+        # The student can fix these; no admin action needed.
+        cat > "$body" <<EOF
+⚠️ Repository를 만들지 않았습니다.
+
+- 사유: ${ERROR_DETAIL}
+
+내용을 고쳐 **새 등록 Issue**를 작성해 주세요: https://github.com/${GITHUB_REPOSITORY}/issues/new?template=register.yml
+
+<!-- registration-result: rejected code=${ERROR_CODE} -->
+EOF
+        gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+        gh issue close "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --reason "not planned"
+        exit 0 ;;
+    esac
     repo_line=""
     if [[ -n ${REPO_URL:-} ]]; then
       repo_line="- Repository: ${REPO_URL} (생성은 되었지만 초대 등 이후 단계가 완료되지 않았습니다)"

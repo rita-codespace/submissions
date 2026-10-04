@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-# Creates (or finds) the student's project repository and invites the student
-# with push permission.
+# Creates (or finds) a student's project repository "<login>-<name>" and
+# invites the student with push permission.
 #
-# Inputs come only from environment variables set by the workflow from
-# github.event.issue.user. The issue title and body are never read, so nothing
-# a student types can reach this shell.
+# Identity comes only from github.event.issue.user. The one value read from the
+# issue body is the requested repository name. It arrives through an
+# environment variable (never interpolated into the script) and must match
+# ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$ before it is used anywhere.
 #
-# Ownership: every repository this script creates carries the marker
-# "[registrant-id:<numeric user id>]" in its description, set in the same API
-# call that creates it. Changing a description needs Maintain or Admin, and
-# students only get Write, so a student cannot forge or move the marker.
-# Access is granted only to a repository whose marker matches the issue
-# author's numeric id. A name match alone is never enough.
+# Ownership: every repository this script creates carries
+# "[registrant-id:<numeric user id>] [project:<name>]" in its description, set
+# in the same API call that creates it. Changing a description needs Maintain
+# or Admin, and students only get Write, so a student cannot forge or move the
+# marker. Access is granted only to a repository whose marker matches the
+# issue author's numeric id and the requested name. A name match alone is
+# never enough.
 #
 # Required env: GH_TOKEN (GitHub App installation token), ORG, STUDENT_LOGIN,
-#               STUDENT_ID, STUDENT_TYPE
+#               STUDENT_ID, STUDENT_TYPE, ISSUE_BODY
 # Outputs (GITHUB_OUTPUT): result=created|existing|failed, repo_name, repo_url,
 #               invite_status=invited|already_collaborator, error_code, error_detail
 set -euo pipefail
 
-REPO_PREFIX="${REPO_PREFIX:-phase1-}"
+MAX_REPOS="${MAX_REPOS:-5}"  # repositories one student may register
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-4}"
 MAX_WAIT="${MAX_WAIT:-60}"   # longest rate-limit wait (seconds) before giving up
 SLEEP="${SLEEP:-sleep}"
@@ -106,12 +108,15 @@ fail_api() {
   fail "${1}_${kind}" "HTTP $API_STATUS on ${1//_/ }: $(api_message)"
 }
 
-marker_of() { printf '[registrant-id:%s]' "$1"; }
 
-# owned_by_student: true when $API_BODY (a repository) carries the student's marker.
+id_marker() { printf '[registrant-id:%s]' "$STUDENT_ID"; }
+project_marker() { printf '[project:%s]' "$name"; }
+
+# owned_by_student: true when $API_BODY (a repository) carries the student's
+# id marker and the requested project marker.
 owned_by_student() {
-  jq -e --arg m "$(marker_of "$STUDENT_ID")" '(.description // "") | contains($m)' \
-    >/dev/null 2>&1 <<<"$API_BODY"
+  jq -e --arg id "$(id_marker)" --arg p "$(project_marker)" \
+    '(.description // "") | contains($id) and contains($p)' >/dev/null 2>&1 <<<"$API_BODY"
 }
 
 # --- 1. who is asking ---------------------------------------------------------
@@ -130,33 +135,51 @@ login=$(jq -r '.login' <<<"$API_BODY")
 [[ $login =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || fail invalid_user "Unexpected login format."
 log "Registering @$login (id $STUDENT_ID)"
 
-# --- 2. find a repository already created for this numeric id -----------------
+# --- 2. requested repository name --------------------------------------------
+# First non-empty line under the form's "### 저장소 이름" heading.
+
+name=$(printf '%s\n' "${ISSUE_BODY:-}" | tr -d '\r' | awk '
+  /^### / { if (found) exit; if (index($0, "### 저장소 이름") == 1) found = 1; next }
+  found && NF { print; exit }')
+name=$(printf '%s' "$name" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr 'A-Z' 'a-z')
+[[ $name =~ ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$ ]] ||
+  fail invalid_repo_name "저장소 이름은 영문 소문자·숫자·하이픈(-)만 사용해 2~40자로 적어야 하며, 하이픈으로 시작하거나 끝날 수 없습니다."
+
+# --- 3. this student's repositories (by numeric id) --------------------------
 
 repo=""
+owned=()
 page=1
 while :; do
   api GET "orgs/$ORG/repos?type=all&per_page=100&page=$page"
   [[ $API_STATUS == 200 ]] || fail_api list_repos
-  repo=$(jq -r --arg p "$REPO_PREFIX" --arg m "$(marker_of "$STUDENT_ID")" '
-      [.[] | select(.name | startswith($p))
-           | select((.description // "") | contains($m)) | .name] | first // empty' <<<"$API_BODY")
-  [[ -z $repo && $(jq length <<<"$API_BODY") -ge 100 ]] || break
+  while IFS= read -r line; do
+    [[ -n $line ]] && owned+=("$line")
+  done < <(jq -r --arg id "$(id_marker)" \
+    '.[] | select((.description // "") | contains($id)) | .name' <<<"$API_BODY")
+  [[ -z $repo ]] && repo=$(jq -r --arg id "$(id_marker)" --arg p "$(project_marker)" '
+      [.[] | select((.description // "") | contains($id) and contains($p)) | .name]
+      | first // empty' <<<"$API_BODY")
+  (( $(jq length <<<"$API_BODY") >= 100 )) || break
   page=$((page + 1))
 done
 
 result=""
 if [[ -n $repo ]]; then
   result=existing
-  log "Found existing repository $ORG/$repo registered to id $STUDENT_ID"
+  log "Found existing repository $ORG/$repo for id $STUDENT_ID, project $name"
 else
-  # --- 3. create it, or verify a same-name repository really is ours ----------
-  repo=$(printf '%s%s' "$REPO_PREFIX" "$login" | tr 'A-Z' 'a-z')
+  ((${#owned[@]} < MAX_REPOS)) ||
+    fail repo_limit_reached "한 계정당 최대 ${MAX_REPOS}개까지 등록할 수 있습니다. 현재 등록된 Repository: ${owned[*]}"
+
+  # --- 4. create it, or verify a same-name repository really is ours ----------
+  repo=$(printf '%s-%s' "$login" "$name" | tr 'A-Z' 'a-z')
 
   verify_same_name() {
     if owned_by_student; then
       result=existing
     else
-      fail name_conflict "$ORG/$repo already exists but was not created by this automation for this account. No access was granted; an organization owner must review it."
+      fail name_conflict "$ORG/$repo already exists but was not created by this automation for this account and project. No access was granted; an organization owner must review it."
     fi
   }
 
@@ -166,13 +189,13 @@ else
     404)
       api POST "orgs/$ORG/repos" \
         -f name="$repo" \
-        -f description="Phase 1 project repository of @$login $(marker_of "$STUDENT_ID")" \
+        -f description="Project repository of @$login $(id_marker) $(project_marker)" \
         -f visibility=public \
         -F has_issues=true -F has_wiki=false -F has_projects=false -F auto_init=true
       case $API_STATUS in
         201) result=created ;;
         422)
-          # Usually a concurrent run for the same student created it first.
+          # Usually a concurrent run for the same request created it first.
           api GET "repos/$ORG/$repo"
           [[ $API_STATUS == 200 ]] || fail_api create_repo
           verify_same_name ;;
