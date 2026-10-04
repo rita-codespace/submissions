@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Test double for the GitHub CLI.
+#
+# `gh api -i -X METHOD PATH ...` replies from $MOCK_DIR/<key>[.<n>], where <key> is
+# METHOD_PATH with every non [A-Za-z0-9.-] character replaced by "_" and <n> is the
+# 1-based count of calls to that key (falls back to the plain <key> file).
+# A response file holds: status line, header lines, a blank line, then the body.
+# Every invocation is appended to $MOCK_DIR/calls.log.
+set -u
+
+printf '%s\n' "$*" >> "$MOCK_DIR/calls.log"
+
+if [[ ${1:-} != api ]]; then
+  # gh issue comment/edit/close: record only.
+  if [[ ${1:-} == issue && ${2:-} == comment ]]; then
+    while (($#)); do
+      if [[ $1 == --body-file ]]; then cp "$2" "$MOCK_DIR/comment.md"; fi
+      shift
+    done
+  fi
+  exit 0
+fi
+shift
+
+method=GET path=""
+while (($#)); do
+  case $1 in
+    -X) method=$2; shift 2 ;;
+    -i) shift ;;
+    -f|-F) shift 2 ;;
+    *) [[ -z $path ]] && path=$1; shift ;;
+  esac
+done
+
+key=$(printf '%s_%s' "$method" "$path" | sed 's/[^A-Za-z0-9.-]/_/g')
+count_file="$MOCK_DIR/.count.$key"
+n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$count_file"
+
+file="$MOCK_DIR/$key.$n"
+[[ -f $file ]] || file="$MOCK_DIR/$key"
+if [[ ! -f $file ]]; then
+  echo "fake-gh: no mock for $key (call $n)" >&2
+  printf 'HTTP/2.0 599 Unmocked\n\n{"message":"unmocked %s"}' "$key"
+  exit 1
+fi
+
+status=$(head -1 "$file")
+printf 'HTTP/2.0 %s Mock\n' "$status"
+awk 'NR > 1 { print; if ($0 == "") exit }' "$file"
+sed '1,/^$/d' "$file"
+if ((status >= 400)); then
+  echo "gh: mock error (HTTP $status)" >&2
+  exit 1
+fi

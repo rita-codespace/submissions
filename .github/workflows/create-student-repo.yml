@@ -1,0 +1,65 @@
+name: Create student repository
+
+# Only issue creation triggers this workflow. There is no pull_request /
+# pull_request_target trigger, so a pull request from an outside account can
+# never run a job that has access to the GitHub App secret.
+on:
+  issues:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  register:
+    # The registration form adds the "registration" label when the issue is
+    # created. Users without triage access cannot add labels any other way.
+    if: >-
+      github.event.issue.pull_request == null &&
+      contains(github.event.issue.labels.*.name, 'registration')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read   # checkout of this repository's scripts
+      issues: write    # comment, label and close the registration issue
+    steps:
+      - name: Check out automation scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Mint GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-administration: write
+
+      # Identity comes only from github.event.issue.user. The issue title and
+      # body are never passed to the shell.
+      - name: Create repository and invite student
+        id: register
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG: ${{ github.repository_owner }}
+          STUDENT_LOGIN: ${{ github.event.issue.user.login }}
+          STUDENT_ID: ${{ github.event.issue.user.id }}
+          STUDENT_TYPE: ${{ github.event.issue.user.type }}
+        run: bash .github/scripts/register-student.sh
+
+      - name: Report result on the issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TOKEN_OUTCOME: ${{ steps.app-token.outcome }}
+          REGISTER_OUTCOME: ${{ steps.register.outcome }}
+          RESULT: ${{ steps.register.outputs.result }}
+          REPO_NAME: ${{ steps.register.outputs.repo_name }}
+          REPO_URL: ${{ steps.register.outputs.repo_url }}
+          INVITE_STATUS: ${{ steps.register.outputs.invite_status }}
+          ERROR_CODE: ${{ steps.register.outputs.error_code }}
+          ERROR_DETAIL: ${{ steps.register.outputs.error_detail }}
+        run: bash .github/scripts/report-result.sh
