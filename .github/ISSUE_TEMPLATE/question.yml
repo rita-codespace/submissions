@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Repository 등록 신청은 이 양식이 아니라 **Project Repository Registration** 양식을 사용하세요.
-        등록 Issue에 오류 댓글이 달렸다면 그 Issue에서 관리자가 처리하므로 따로 문의하지 않아도 됩니다.
+        등록 Issue에 ❌ 오류 댓글이 달렸다면 그 Issue에서 관리자가 처리하므로 따로 문의하지 않아도 됩니다. ⚠️ 안내 댓글은 내용을 고쳐 다시 신청하면 됩니다.
   - type: textarea
     id: question
     attributes:
